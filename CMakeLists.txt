@@ -26,7 +26,10 @@ endif ()
 
 project(nexus_template)
 
-include_directories(include)
+include_directories(include deps/websocketpp)
+
+# load websocketpp as a cmake project
+add_subdirectory(deps/websocketpp)
 
 # load imgui as a cmake project
 add_subdirectory(src/imgui)
