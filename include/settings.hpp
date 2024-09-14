@@ -15,8 +15,10 @@ extern std::filesystem::path settings_path;
 extern std::mutex mutex;
 
 extern bool is_addon_enabled;
+extern std::string drf_token;
 
 extern const char *IS_ADDON_ENABLED;
+extern const char *DRF_TOKEN;
 } // namespace Settings
 
 #endif // SETTINGS_HPP

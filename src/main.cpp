@@ -4,8 +4,6 @@
 #include <imgui/imgui_internal.h>
 #include <nexus/Nexus.h>
 #include <settings.hpp>
-#include <websocketpp/client.hpp>
-#include <websocketpp/config/asio_no_tls_client.hpp>
 
 void addon_load(AddonAPI *api_p);
 void addon_unload();
@@ -49,6 +47,66 @@ extern "C" __declspec(dllexport) AddonDefinition *GetAddonDef()
     return &addon_def;
 }
 
+typedef struct
+{
+    int id;
+    int quantity;
+} item;
+
+typedef struct
+{
+    std::string type;
+    std::string character;
+    std::vector<item> drops;
+    std::vector<item> currencies;
+    std::string timestamp;
+} message;
+
+std::atomic<bool> process_thread_running = false;
+void process_messages()
+{
+    process_thread_running = true;
+    while (process_thread_running) {
+        if (to_process.empty())
+            continue;
+        nlohmann::json json;
+        {
+            std::lock_guard<std::mutex> lock(to_process_mutex);
+
+            json = to_process.front();
+            to_process.pop();
+        }
+        message msg;
+        msg.type = json["kind"].get<std::string>();
+        if (msg.type == "data") {
+            msg.character = json["payload"]["character"].get<std::string>();
+            msg.timestamp = json["payload"]["drop"]["timestamp"].get<std::string>();
+            for (auto &i : json["payload"]["drop"]["items"].items()) {
+                item item;
+                item.id = std::stoi(i.key());
+                item.quantity = i.value().get<int>();
+                msg.drops.push_back(item);
+            }
+            for (auto &i : json["payload"]["drop"]["curr"].items()) {
+                item item;
+                item.id = std::stoi(i.key());
+                item.quantity = i.value().get<int>();
+                msg.currencies.push_back(item);
+            }
+            std::string out = "character: " + msg.character + " picked up: " + std::to_string(msg.drops.size()) +
+                              " items and " + std::to_string(msg.currencies.size()) + " currencies.\nitem list:\n";
+            for (auto &i : msg.drops) {
+                out += "- " + std::to_string(i.id) + ": " + std::to_string(i.quantity) + "\n";
+            }
+            for (auto &i : msg.currencies) {
+                out += "- " + std::to_string(i.id) + ": " + std::to_string(i.quantity) + "\n";
+            }
+            api->Log(ELogLevel_DEBUG, addon_name, out.c_str());
+        }
+    }
+}
+
+std::thread process_thread;
 void addon_load(AddonAPI *api_p)
 {
     api = api_p;
@@ -68,14 +126,21 @@ void addon_load(AddonAPI *api_p)
         Settings::json_settings[Settings::IS_ADDON_ENABLED] = Settings::is_addon_enabled;
         Settings::save(Settings::settings_path);
     }*/
-    // TODO: open websocket
-    websocketpp::client<websocketpp::config::asio_client> c;
     api->Log(ELogLevel_INFO, addon_name, "addon loaded!");
 }
 
 void addon_unload()
 {
     api->Log(ELogLevel_INFO, addon_name, "unloading addon...");
+    process_thread_running = false;
+    if (process_thread.joinable())
+        process_thread.join();
+    drf_client->close();
+    delete drf_client;
+    drf_client = nullptr;
+    while (!to_process.empty()) {
+        to_process.pop();
+    }
     api->Renderer.Deregister(addon_render);
     api->Renderer.Deregister(addon_options);
     // api->WndProc.Deregister(wnd_proc);
@@ -83,7 +148,18 @@ void addon_unload()
     api = nullptr;
 }
 
-void addon_render() { render_window(); }
+void addon_render()
+{
+    if (drf_client == nullptr && Settings::drf_token.length() == 36) {
+        drf_client = new DrfClient();
+        drf_client->run();
+    }
+    if (!process_thread_running) {
+        process_thread = std::thread(&process_messages);
+        process_thread.detach();
+    }
+    render_window();
+}
 
 void addon_options() { render_options(); }
 
